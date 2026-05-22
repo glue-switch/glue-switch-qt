@@ -23,5 +23,7 @@ int main(int argc, char *argv[])
     }
     MainWindow w;
     w.show();
-    return QApplication::exec();
+    const int exitCode = QApplication::exec();
+    a.removeTranslator(&translator);
+    return exitCode;
 }
