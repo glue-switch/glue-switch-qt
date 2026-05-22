@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QMap>
+#include <QTranslator>
 
 class QButtonGroup;
 class QLabel;
@@ -24,10 +25,17 @@ public:
         Use
     };
 
+    enum class LanguagePreference {
+        FollowSystem,
+        English,
+        Chinese
+    };
+
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
 protected:
+    void changeEvent(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -63,6 +71,9 @@ private:
     void setupResizeHandles();
     void setupStyles();
     void connectSignals();
+    void applyLanguagePreference();
+    void retranslateUi();
+    void showSettingsDialog();
 
     void loadLibrary();
     bool saveLibrary();
@@ -92,6 +103,7 @@ private:
     void applyStateToTarget(FileEntry &entry, const QString &stateName);
     void setMode(AppMode mode);
     void selectFileById(const QString &fileId);
+    QString displayStateName(const QString &stateName) const;
 
     void openFilesDialog();
     void handleFileSelectionChanged();
@@ -117,9 +129,11 @@ private:
 
     QPushButton *m_openButton = nullptr;
     QToolButton *m_refreshButton = nullptr;
+    QLabel *m_fileListLabel = nullptr;
     QListWidget *m_fileListWidget = nullptr;
 
     QWidget *m_dropHint = nullptr;
+    QLabel *m_dropTextLabel = nullptr;
     QTabBar *m_stateTabBar = nullptr;
     QToolButton *m_addStateButton = nullptr;
     QLabel *m_editorTitleLabel = nullptr;
@@ -138,6 +152,9 @@ private:
     QList<FileEntry> m_files;
     QString m_currentFileId;
     AppMode m_mode = AppMode::Edit;
+    LanguagePreference m_languagePreference = LanguagePreference::FollowSystem;
+    QTranslator m_translator;
+    QTranslator m_qtBaseTranslator;
     bool m_isEditorDirty = false;
     bool m_isUpdatingUi = false;
     bool m_draggingWindow = false;

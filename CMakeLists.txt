@@ -33,7 +33,10 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
 #                 ${CMAKE_CURRENT_SOURCE_DIR}/android)
 # For more information, see https://doc.qt.io/qt-6/qt-add-executable.html#target-creation
 
-    qt_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
+    qt_add_translations(glue-switch
+        TS_FILES ${TS_FILES}
+        RESOURCE_PREFIX "/i18n"
+    )
 else()
     if(ANDROID)
         add_library(glue-switch SHARED
@@ -51,6 +54,14 @@ else()
 endif()
 
 target_link_libraries(glue-switch PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+
+if(QT_VERSION_MAJOR LESS 6)
+    add_custom_command(TARGET glue-switch POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${QM_FILES}
+            $<TARGET_FILE_DIR:glue-switch>
+    )
+endif()
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an
@@ -72,6 +83,12 @@ install(TARGETS glue-switch
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+if(QT_VERSION_MAJOR LESS 6)
+    install(FILES ${QM_FILES}
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(glue-switch)

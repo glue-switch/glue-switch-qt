@@ -1,8 +1,13 @@
 #include "mainwindow.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCloseEvent>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -11,6 +16,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFormLayout>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -19,7 +25,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLibraryInfo>
 #include <QListWidget>
+#include <QLocale>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -44,7 +52,8 @@
 
 namespace {
 
-const QString kDefaultStateName = QStringLiteral("默认");
+const QString kDefaultStateName = QStringLiteral("Default");
+const QString kLegacyDefaultStateName = QStringLiteral("默认");
 constexpr int kResizeHandleThickness = 8;
 constexpr int kResizeCornerSize = 12;
 
@@ -53,9 +62,59 @@ QString modeToString(MainWindow::AppMode mode)
     return mode == MainWindow::AppMode::Edit ? QStringLiteral("edit") : QStringLiteral("use");
 }
 
+QString languagePreferenceToString(MainWindow::LanguagePreference preference)
+{
+    switch (preference) {
+    case MainWindow::LanguagePreference::English:
+        return QStringLiteral("en");
+    case MainWindow::LanguagePreference::Chinese:
+        return QStringLiteral("zh");
+    case MainWindow::LanguagePreference::FollowSystem:
+    default:
+        return QStringLiteral("system");
+    }
+}
+
 MainWindow::AppMode modeFromString(const QString &value)
 {
     return value == QStringLiteral("use") ? MainWindow::AppMode::Use : MainWindow::AppMode::Edit;
+}
+
+MainWindow::LanguagePreference languagePreferenceFromString(const QString &value)
+{
+    if (value == QStringLiteral("en")) {
+        return MainWindow::LanguagePreference::English;
+    }
+    if (value == QStringLiteral("zh")) {
+        return MainWindow::LanguagePreference::Chinese;
+    }
+    return MainWindow::LanguagePreference::FollowSystem;
+}
+
+QString normalizeStateName(const QString &stateName)
+{
+    return stateName == kLegacyDefaultStateName ? kDefaultStateName : stateName;
+}
+
+QString qtTranslationsPath()
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return QLibraryInfo::path(QLibraryInfo::TranslationsPath);
+#else
+    return QLibraryInfo::location(QLibraryInfo::TranslationsPath);
+#endif
+}
+
+bool loadAppTranslation(QTranslator &translator, const QLocale &locale)
+{
+    return translator.load(locale,
+                           QStringLiteral("glue-switch"),
+                           QStringLiteral("_"),
+                           QStringLiteral(":/i18n"))
+            || translator.load(locale,
+                               QStringLiteral("glue-switch"),
+                               QStringLiteral("_"),
+                               QCoreApplication::applicationDirPath());
 }
 
 QPoint globalMousePosition(QMouseEvent *event)
@@ -95,19 +154,35 @@ void enableFramelessResize(HWND hwnd)
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    loadLibrary();
+    applyLanguagePreference();
     setupWindow();
     setupUi();
     setupResizeHandles();
     setupStyles();
     connectSignals();
-    loadLibrary();
+    retranslateUi();
     refreshModeUi();
     refreshFileList();
     refreshStateTabs();
     refreshEditor();
+    refreshWindowState();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    qApp->removeTranslator(&m_qtBaseTranslator);
+    qApp->removeTranslator(&m_translator);
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::LanguageChange && m_rootWidget != nullptr) {
+        retranslateUi();
+    }
+
+    QMainWindow::changeEvent(event);
+}
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
@@ -328,21 +403,21 @@ void MainWindow::setupUi()
 
     auto *contentWidget = new QWidget(m_rootWidget);
     auto *contentLayout = new QHBoxLayout(contentWidget);
-    contentLayout->setContentsMargins(16, 16, 16, 16);
-    contentLayout->setSpacing(16);
+    contentLayout->setContentsMargins(0, 0, 16, 0);
+    contentLayout->setSpacing(0);
     rootLayout->addWidget(contentWidget, 1);
 
     auto *leftPanel = new QFrame(contentWidget);
     leftPanel->setObjectName(QStringLiteral("SidePanel"));
     leftPanel->setFixedWidth(310);
     auto *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(14, 14, 14, 14);
+    leftLayout->setContentsMargins(14, 16, 14, 14);
     leftLayout->setSpacing(12);
 
     auto *listHeaderLayout = new QHBoxLayout();
     listHeaderLayout->setSpacing(10);
 
-    m_openButton = new QPushButton(loadIcon(QStringLiteral(":/assets/file_open.png")), tr("打开文件"), leftPanel);
+    m_openButton = new QPushButton(loadIcon(QStringLiteral(":/assets/file_open.png")), tr("Open Files"), leftPanel);
     m_openButton->setObjectName(QStringLiteral("PrimaryButton"));
     m_openButton->setMinimumHeight(42);
     listHeaderLayout->addWidget(m_openButton, 1);
@@ -351,21 +426,22 @@ void MainWindow::setupUi()
     m_refreshButton->setObjectName(QStringLiteral("GhostButton"));
     m_refreshButton->setIcon(loadIcon(QStringLiteral(":/assets/file_refresh.png")));
     m_refreshButton->setIconSize(QSize(18, 18));
-    m_refreshButton->setToolTip(tr("刷新文件状态"));
+    m_refreshButton->setToolTip(tr("Refresh File Status"));
     m_refreshButton->setFixedSize(42, 42);
     listHeaderLayout->addWidget(m_refreshButton, 0, Qt::AlignRight);
     leftLayout->addLayout(listHeaderLayout);
 
-    auto *fileListLabel = new QLabel(tr("文件列表"), leftPanel);
-    fileListLabel->setObjectName(QStringLiteral("SectionLabel"));
-    leftLayout->addWidget(fileListLabel);
+    m_fileListLabel = new QLabel(tr("Files"), leftPanel);
+    m_fileListLabel->setObjectName(QStringLiteral("SectionLabel"));
+    leftLayout->addWidget(m_fileListLabel);
 
     m_fileListWidget = new QListWidget(leftPanel);
     m_fileListWidget->setObjectName(QStringLiteral("FileListWidget"));
     m_fileListWidget->setFrameShape(QFrame::NoFrame);
+    m_fileListWidget->setContentsMargins(0, 0, 0, 0);
     m_fileListWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_fileListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_fileListWidget->setSpacing(8);
+    m_fileListWidget->setSpacing(0);
     leftLayout->addWidget(m_fileListWidget, 1);
 
     m_dropHint = new QFrame(leftPanel);
@@ -380,16 +456,16 @@ void MainWindow::setupUi()
     dropIconLabel->setPixmap(loadIcon(QStringLiteral(":/assets/file_drop.png")).pixmap(26, 26));
     dropLayout->addWidget(dropIconLabel);
 
-    auto *dropTextLabel = new QLabel(tr("拖入文件到此处"), m_dropHint);
-    dropTextLabel->setObjectName(QStringLiteral("DropHintLabel"));
-    dropTextLabel->setAlignment(Qt::AlignCenter);
-    dropLayout->addWidget(dropTextLabel);
+    m_dropTextLabel = new QLabel(tr("Drop files here"), m_dropHint);
+    m_dropTextLabel->setObjectName(QStringLiteral("DropHintLabel"));
+    m_dropTextLabel->setAlignment(Qt::AlignCenter);
+    dropLayout->addWidget(m_dropTextLabel);
     leftLayout->addWidget(m_dropHint);
 
     auto *rightPanel = new QFrame(contentWidget);
     rightPanel->setObjectName(QStringLiteral("EditorPanel"));
     auto *rightLayout = new QVBoxLayout(rightPanel);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setContentsMargins(16, 16, 0, 16);
     rightLayout->setSpacing(12);
 
     auto *tabRow = new QHBoxLayout();
@@ -408,7 +484,7 @@ void MainWindow::setupUi()
     m_addStateButton->setObjectName(QStringLiteral("StateAddButton"));
     m_addStateButton->setIcon(loadIcon(QStringLiteral(":/assets/tab_add.png")));
     m_addStateButton->setIconSize(QSize(16, 16));
-    m_addStateButton->setToolTip(tr("新建状态"));
+    m_addStateButton->setToolTip(tr("Add State"));
     m_addStateButton->setFixedSize(36, 36);
     tabRow->addWidget(m_addStateButton);
     rightLayout->addLayout(tabRow);
@@ -421,18 +497,18 @@ void MainWindow::setupUi()
 
     auto *editorHeader = new QHBoxLayout();
     editorHeader->setSpacing(8);
-    m_editorTitleLabel = new QLabel(tr("未选择文件"), editorCard);
+    m_editorTitleLabel = new QLabel(tr("No File Selected"), editorCard);
     m_editorTitleLabel->setObjectName(QStringLiteral("EditorTitle"));
     editorHeader->addWidget(m_editorTitleLabel, 1);
 
-    m_saveBadgeLabel = new QLabel(tr("已保存"), editorCard);
+    m_saveBadgeLabel = new QLabel(tr("Saved"), editorCard);
     m_saveBadgeLabel->setObjectName(QStringLiteral("SaveBadge"));
     editorHeader->addWidget(m_saveBadgeLabel, 0, Qt::AlignRight);
     editorLayout->addLayout(editorHeader);
 
     m_editor = new QPlainTextEdit(editorCard);
     m_editor->setObjectName(QStringLiteral("Editor"));
-    m_editor->setPlaceholderText(tr("在编辑模式下维护不同状态的文件内容，在使用模式下预览并切换状态。"));
+    m_editor->setPlaceholderText(tr("Maintain per-state file content in Edit mode, and preview or switch states in Use mode."));
     m_editor->setWordWrapMode(QTextOption::NoWrap);
     QFont editorFont(QStringLiteral("Consolas"));
     editorFont.setStyleHint(QFont::Monospace);
@@ -440,7 +516,7 @@ void MainWindow::setupUi()
     m_editor->setFont(editorFont);
     editorLayout->addWidget(m_editor, 1);
 
-    m_saveButton = new QPushButton(loadIcon(QStringLiteral(":/assets/file_save.png")), tr("保存"), editorCard);
+    m_saveButton = new QPushButton(loadIcon(QStringLiteral(":/assets/file_save.png")), tr("Save"), editorCard);
     m_saveButton->setObjectName(QStringLiteral("PrimaryButton"));
     m_saveButton->setMinimumHeight(40);
     m_saveButton->setFixedWidth(110);
@@ -467,7 +543,7 @@ void MainWindow::setupTitleBar()
     logoLabel->setPixmap(loadIcon(QStringLiteral(":/assets/title_logo.png")).pixmap(24, 24));
     titleLayout->addWidget(logoLabel);
 
-    m_titleLabel = new QLabel(tr("Glue Switch"), m_titleBar);
+    m_titleLabel = new QLabel(QStringLiteral("Glue Switch"), m_titleBar);
     m_titleLabel->setObjectName(QStringLiteral("WindowTitleLabel"));
     m_titleLabel->installEventFilter(this);
     titleLayout->addWidget(m_titleLabel);
@@ -479,10 +555,10 @@ void MainWindow::setupTitleBar()
     modeLayout->setContentsMargins(4, 4, 4, 4);
     modeLayout->setSpacing(4);
 
-    m_editModeButton = new QPushButton(tr("编辑"), modeContainer);
+    m_editModeButton = new QPushButton(tr("Edit"), modeContainer);
     m_editModeButton->setCheckable(true);
     m_editModeButton->setObjectName(QStringLiteral("ModeButton"));
-    m_useModeButton = new QPushButton(tr("使用"), modeContainer);
+    m_useModeButton = new QPushButton(tr("Use"), modeContainer);
     m_useModeButton->setCheckable(true);
     m_useModeButton->setObjectName(QStringLiteral("ModeButton"));
     modeLayout->addWidget(m_editModeButton);
@@ -499,7 +575,7 @@ void MainWindow::setupTitleBar()
     m_settingsButton->setObjectName(QStringLiteral("WindowButton"));
     m_settingsButton->setIcon(loadIcon(QStringLiteral(":/assets/title_settings.png")));
     m_settingsButton->setIconSize(QSize(14, 14));
-    m_settingsButton->setToolTip(tr("关于 Glue Switch"));
+    m_settingsButton->setToolTip(tr("Settings"));
     m_settingsButton->setFixedSize(28, 28);
     titleLayout->addWidget(m_settingsButton);
 
@@ -564,7 +640,8 @@ void MainWindow::setupStyles()
         "#WindowButton, #CloseButton { background: transparent; border: none; border-radius: 8px; }"
         "#WindowButton:hover { background: rgba(255, 255, 255, 0.18); }"
         "#CloseButton:hover { background: #ff5a5f; }"
-        "#SidePanel, #EditorCard { background: white; border-radius: 16px; }"
+        "#SidePanel { background: white; border-radius: 0; }"
+        "#EditorCard { background: white; border-radius: 16px; }"
         "#EditorPanel { background: transparent; }"
         "#SectionLabel { color: #7b8798; font-size: 12px; font-weight: 600; }"
         "#PrimaryButton { background: #2f67e4; color: white; border: none; border-radius: 10px; "
@@ -575,6 +652,9 @@ void MainWindow::setupStyles()
         "#GhostButton:hover, #StateAddButton:hover { background: #ebf1ff; }"
         "#GhostButton:disabled, #StateAddButton:disabled { background: #f5f7fb; border-color: #edf2f8; }"
         "#FileListWidget { background: transparent; border: none; outline: 0; }"
+        "#FileListWidget::item { background: transparent; border: none; margin: 0 0 8px 0; padding: 0; }"
+        "#FileListWidget::item:selected { background: transparent; }"
+        "#FileListWidget::item:hover { background: transparent; }"
         "#DropHint { background: #f7faff; border: 2px dashed #d7e3fb; border-radius: 12px; }"
         "#DropHintLabel { color: #9ba8bf; font-size: 13px; }"
         "#EditorTitle { color: #202938; font-size: 16px; font-weight: 700; }"
@@ -626,10 +706,7 @@ void MainWindow::connectSignals()
     });
 
     connect(m_settingsButton, &QToolButton::clicked, this, [this]() {
-        QMessageBox::information(
-            this,
-            tr("关于 Glue Switch"),
-            tr("Glue Switch 是一个轻量级配置文件切换工具。\n\n编辑模式用于维护不同状态的内容，使用模式用于将指定状态快速写回目标文件。"));
+        showSettingsDialog();
     });
     connect(m_minimizeButton, &QToolButton::clicked, this, &QWidget::showMinimized);
     connect(m_maximizeButton, &QToolButton::clicked, this, [this]() {
@@ -651,7 +728,10 @@ void MainWindow::loadLibrary()
     }
 
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, tr("读取失败"), tr("无法读取 Glue Switch 本地数据。"));
+        QMessageBox::warning(
+            this,
+            tr("Read Failed"),
+            tr("Unable to read local Glue Switch data."));
         return;
     }
 
@@ -665,6 +745,7 @@ void MainWindow::loadLibrary()
     const QJsonObject root = document.object();
     m_mode = modeFromString(root.value(QStringLiteral("mode")).toString());
     m_currentFileId = root.value(QStringLiteral("currentFileId")).toString();
+    m_languagePreference = languagePreferenceFromString(root.value(QStringLiteral("languagePreference")).toString());
 
     const QJsonArray filesArray = root.value(QStringLiteral("files")).toArray();
     for (const QJsonValue &value : filesArray) {
@@ -673,13 +754,13 @@ void MainWindow::loadLibrary()
         entry.id = object.value(QStringLiteral("id")).toString(QUuid::createUuid().toString(QUuid::WithoutBraces));
         entry.targetPath = object.value(QStringLiteral("targetPath")).toString();
         entry.displayName = object.value(QStringLiteral("displayName")).toString(QFileInfo(entry.targetPath).fileName());
-        entry.selectedState = object.value(QStringLiteral("selectedState")).toString(kDefaultStateName);
-        entry.activeState = object.value(QStringLiteral("activeState")).toString(kDefaultStateName);
+        entry.selectedState = normalizeStateName(object.value(QStringLiteral("selectedState")).toString(kDefaultStateName));
+        entry.activeState = normalizeStateName(object.value(QStringLiteral("activeState")).toString(kDefaultStateName));
 
         const QJsonArray stateArray = object.value(QStringLiteral("states")).toArray();
         for (const QJsonValue &stateValue : stateArray) {
             const QJsonObject stateObject = stateValue.toObject();
-            entry.states.insert(stateObject.value(QStringLiteral("name")).toString(),
+            entry.states.insert(normalizeStateName(stateObject.value(QStringLiteral("name")).toString()),
                                 stateObject.value(QStringLiteral("content")).toString());
         }
 
@@ -743,11 +824,15 @@ bool MainWindow::saveLibrary()
     root.insert(QStringLiteral("version"), 1);
     root.insert(QStringLiteral("mode"), modeToString(m_mode));
     root.insert(QStringLiteral("currentFileId"), m_currentFileId);
+    root.insert(QStringLiteral("languagePreference"), languagePreferenceToString(m_languagePreference));
     root.insert(QStringLiteral("files"), filesArray);
 
     QSaveFile file(libraryFilePath());
     if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, tr("保存失败"), tr("无法写入 Glue Switch 本地数据。"));
+        QMessageBox::warning(
+            this,
+            tr("Save Failed"),
+            tr("Unable to write local Glue Switch data."));
         return false;
     }
 
@@ -826,13 +911,17 @@ void MainWindow::refreshFileList()
         item->setSizeHint(QSize(0, 58));
 
         auto *rowWidget = new QWidget(m_fileListWidget);
+        rowWidget->setObjectName(QStringLiteral("FileListRow"));
+        rowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         const bool selected = entry.id == m_currentFileId;
         const bool exists = QFileInfo::exists(entry.targetPath);
         rowWidget->setStyleSheet(QStringLiteral(
-            "QWidget { background: %1; border-radius: 10px; }"
-            "QLabel#FileName { color: #243041; font-weight: 600; }"
-            "QLabel#StateName { color: %2; font-weight: 600; }")
+            "QWidget#FileListRow { background: %1; border: %2; border-radius: 10px; }"
+            "QWidget#FileListRow QLabel#FileName { color: %3; font-weight: 600; }"
+            "QWidget#FileListRow QLabel#StateName { color: %4; font-weight: 600; }")
                                      .arg(selected ? QStringLiteral("#edf4ff") : QStringLiteral("transparent"),
+                                          selected ? QStringLiteral("1px solid #dbe7ff") : QStringLiteral("1px solid transparent"),
+                                          selected ? QStringLiteral("#1f2f46") : QStringLiteral("#243041"),
                                           exists ? QStringLiteral("#2f67e4") : QStringLiteral("#e05b5b")));
 
         auto *layout = new QHBoxLayout(rowWidget);
@@ -848,11 +937,13 @@ void MainWindow::refreshFileList()
 
         auto *nameLabel = new QLabel(entry.displayName, rowWidget);
         nameLabel->setObjectName(QStringLiteral("FileName"));
-        layout->addWidget(nameLabel);
+        layout->addWidget(nameLabel, 1);
 
-        auto *stateLabel = new QLabel(exists ? entry.activeState : tr("文件缺失"), rowWidget);
+        auto *stateLabel = new QLabel(exists ? displayStateName(entry.activeState)
+                                             : tr("Missing"),
+                                      rowWidget);
         stateLabel->setObjectName(QStringLiteral("StateName"));
-        layout->addWidget(stateLabel, 0, Qt::AlignRight);
+        layout->addWidget(stateLabel, 0, Qt::AlignVCenter | Qt::AlignRight);
 
         rowWidget->setToolTip(entry.targetPath);
         m_fileListWidget->setItemWidget(item, rowWidget);
@@ -887,7 +978,7 @@ void MainWindow::refreshStateTabs()
             headerLayout->setContentsMargins(12, 0, 8, 0);
             headerLayout->setSpacing(8);
 
-            auto *titleLabel = new QLabel(stateName, tabHeader);
+            auto *titleLabel = new QLabel(displayStateName(stateName), tabHeader);
             titleLabel->setObjectName(QStringLiteral("StateTabTitle"));
             headerLayout->addWidget(titleLabel);
 
@@ -899,7 +990,7 @@ void MainWindow::refreshStateTabs()
                 closeButton->setAutoRaise(true);
                 closeButton->setCursor(Qt::PointingHandCursor);
                 closeButton->setFixedSize(12, 12);
-                closeButton->setToolTip(tr("删除状态"));
+                closeButton->setToolTip(tr("Delete State"));
                 headerLayout->addWidget(closeButton);
 
                 connect(closeButton, &QToolButton::clicked, this, [this, stateName]() {
@@ -939,7 +1030,7 @@ void MainWindow::refreshEditor()
 
     const FileEntry *entry = currentFile();
     if (entry == nullptr) {
-        m_editorTitleLabel->setText(tr("未选择文件"));
+        m_editorTitleLabel->setText(tr("No File Selected"));
         m_editor->clear();
         m_editor->setReadOnly(true);
         m_saveButton->setEnabled(false);
@@ -949,7 +1040,7 @@ void MainWindow::refreshEditor()
     }
 
     const QString stateName = currentStateName();
-    m_editorTitleLabel->setText(tr("%1 - %2状态").arg(entry->displayName, stateName));
+    m_editorTitleLabel->setText(tr("%1 - %2 State").arg(entry->displayName, displayStateName(stateName)));
     m_editor->setPlainText(entry->states.value(stateName));
     m_editor->setReadOnly(m_mode == AppMode::Use);
     m_saveButton->setEnabled(m_mode == AppMode::Edit);
@@ -976,7 +1067,8 @@ void MainWindow::refreshModeUi()
 
 void MainWindow::refreshWindowState()
 {
-    m_maximizeButton->setToolTip(isMaximized() ? tr("还原") : tr("最大化"));
+    m_maximizeButton->setToolTip(
+        isMaximized() ? tr("Restore") : tr("Maximize"));
 }
 
 void MainWindow::refreshFileStatuses()
@@ -989,10 +1081,10 @@ void MainWindow::refreshFileStatuses()
 void MainWindow::updateSaveBadge(bool saved)
 {
     if (saved) {
-        m_saveBadgeLabel->setText(tr("已保存"));
+        m_saveBadgeLabel->setText(tr("Saved"));
         m_saveBadgeLabel->setStyleSheet(QStringLiteral("background:#edf4ff;color:#6c8ee8;border-radius:12px;padding:6px 12px;font-weight:600;"));
     } else {
-        m_saveBadgeLabel->setText(tr("未保存"));
+        m_saveBadgeLabel->setText(tr("Unsaved"));
         m_saveBadgeLabel->setStyleSheet(QStringLiteral("background:#fff3df;color:#dd8c1d;border-radius:12px;padding:6px 12px;font-weight:600;"));
     }
 }
@@ -1075,8 +1167,8 @@ bool MainWindow::maybeSavePendingChanges()
 
     const QMessageBox::StandardButton result = QMessageBox::question(
         this,
-        tr("保存修改"),
-        tr("当前状态内容尚未保存，是否先保存再继续？"),
+        tr("Save Changes"),
+        tr("The current state has unsaved changes. Save before continuing?"),
         QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
         QMessageBox::Yes);
 
@@ -1115,7 +1207,11 @@ void MainWindow::markEditorDirty(bool dirty)
 void MainWindow::applyStateToTarget(FileEntry &entry, const QString &stateName)
 {
     if (!writeTextFile(entry.targetPath, entry.states.value(stateName))) {
-        QMessageBox::warning(this, tr("应用失败"), tr("无法将当前状态写入目标文件：\n%1").arg(entry.targetPath));
+        QMessageBox::warning(
+            this,
+            tr("Apply Failed"),
+            tr("Unable to write the current state to the target file:\n%1")
+                .arg(entry.targetPath));
         return;
     }
 
@@ -1165,9 +1261,9 @@ void MainWindow::openFilesDialog()
 
     const QStringList files = QFileDialog::getOpenFileNames(
         this,
-        tr("导入文件"),
+        tr("Import Files"),
         QDir::homePath(),
-        tr("所有文件 (*.*)"));
+        tr("All Files (*.*)"));
 
     importFiles(files);
 }
@@ -1245,14 +1341,17 @@ void MainWindow::createState()
 
     const QString stateName = QInputDialog::getText(
         this,
-        tr("新建状态"),
-        tr("请输入新状态名称：")).trimmed();
+        tr("New State"),
+        tr("Enter the new state name:")).trimmed();
 
     if (stateName.isEmpty()) {
         return;
     }
     if (entry->states.contains(stateName)) {
-        QMessageBox::information(this, tr("状态已存在"), tr("该状态名称已经存在，请使用其他名称。"));
+        QMessageBox::information(
+            this,
+            tr("State Already Exists"),
+            tr("This state name already exists. Please use a different name."));
         return;
     }
 
@@ -1272,14 +1371,18 @@ void MainWindow::removeState(int index)
 
     const QString stateName = m_stateTabBar->tabData(index).toString();
     if (stateName == kDefaultStateName) {
-        QMessageBox::information(this, tr("无法删除"), tr("默认状态不能被删除。"));
+        QMessageBox::information(
+            this,
+            tr("Cannot Delete"),
+            tr("The default state cannot be deleted."));
         return;
     }
 
     const QMessageBox::StandardButton result = QMessageBox::question(
         this,
-        tr("删除状态"),
-        tr("确认删除状态“%1”吗？").arg(stateName),
+        tr("Delete State"),
+        tr("Delete state \"%1\"?")
+            .arg(displayStateName(stateName)),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
 
@@ -1481,4 +1584,135 @@ Qt::CursorShape MainWindow::cursorForResizeRegion(ResizeRegion region) const
     default:
         return Qt::ArrowCursor;
     }
+}
+
+void MainWindow::applyLanguagePreference()
+{
+    qApp->removeTranslator(&m_qtBaseTranslator);
+    qApp->removeTranslator(&m_translator);
+
+    if (m_languagePreference == LanguagePreference::English) {
+        return;
+    }
+
+    if (m_languagePreference == LanguagePreference::Chinese) {
+        loadAppTranslation(m_translator, QLocale(QStringLiteral("zh_CN")));
+    } else {
+        const QStringList uiLanguages = QLocale::system().uiLanguages();
+        for (const QString &localeName : uiLanguages) {
+            if (loadAppTranslation(m_translator, QLocale(localeName))) {
+                break;
+            }
+        }
+    }
+
+    if (!m_translator.isEmpty()) {
+        qApp->installTranslator(&m_translator);
+    }
+
+    if (!m_translator.isEmpty()) {
+        if (m_qtBaseTranslator.load(QLocale(QStringLiteral("zh_CN")),
+                                    QStringLiteral("qtbase"),
+                                    QStringLiteral("_"),
+                                    qtTranslationsPath())) {
+            qApp->installTranslator(&m_qtBaseTranslator);
+        }
+    }
+}
+
+QString MainWindow::displayStateName(const QString &stateName) const
+{
+    if (normalizeStateName(stateName) == kDefaultStateName) {
+        return tr("Default");
+    }
+    return stateName;
+}
+
+void MainWindow::retranslateUi()
+{
+    setWindowTitle(tr("Glue Switch"));
+    m_titleLabel->setText(tr("Glue Switch"));
+    m_editModeButton->setText(tr("Edit"));
+    m_useModeButton->setText(tr("Use"));
+    m_settingsButton->setToolTip(tr("Settings"));
+    m_openButton->setText(tr("Open Files"));
+    m_refreshButton->setToolTip(tr("Refresh File Status"));
+    m_fileListLabel->setText(tr("Files"));
+    m_dropTextLabel->setText(tr("Drop files here"));
+    m_addStateButton->setToolTip(tr("Add State"));
+    m_editor->setPlaceholderText(tr("Maintain per-state file content in Edit mode, and preview or switch states in Use mode."));
+    m_saveButton->setText(tr("Save"));
+    updateSaveBadge(!m_isEditorDirty);
+    refreshWindowState();
+    refreshFileList();
+    refreshStateTabs();
+    refreshEditor();
+}
+
+void MainWindow::showSettingsDialog()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Settings"));
+    dialog.setModal(true);
+    dialog.resize(420, 0);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(20, 20, 20, 16);
+    layout->setSpacing(16);
+
+    auto *introLabel = new QLabel(
+        tr("Choose the application display language."),
+        &dialog);
+    introLabel->setWordWrap(true);
+    layout->addWidget(introLabel);
+
+    auto *formLayout = new QFormLayout();
+    formLayout->setLabelAlignment(Qt::AlignLeft);
+    formLayout->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    formLayout->setHorizontalSpacing(16);
+    formLayout->setVerticalSpacing(12);
+
+    auto *languageCombo = new QComboBox(&dialog);
+    languageCombo->addItem(tr("Follow System"),
+                           static_cast<int>(LanguagePreference::FollowSystem));
+    languageCombo->addItem(tr("English"),
+                           static_cast<int>(LanguagePreference::English));
+    languageCombo->addItem(tr("Chinese"),
+                           static_cast<int>(LanguagePreference::Chinese));
+
+    for (int index = 0; index < languageCombo->count(); ++index) {
+        if (languageCombo->itemData(index).toInt() == static_cast<int>(m_languagePreference)) {
+            languageCombo->setCurrentIndex(index);
+            break;
+        }
+    }
+
+    formLayout->addRow(tr("Language"), languageCombo);
+    layout->addLayout(formLayout);
+
+    auto *aboutLabel = new QLabel(
+        tr("Glue Switch is a lightweight configuration file switching tool."),
+        &dialog);
+    aboutLabel->setWordWrap(true);
+    layout->addWidget(aboutLabel);
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttonBox->button(QDialogButtonBox::Ok)->setText(tr("OK"));
+    buttonBox->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const auto selectedPreference = static_cast<LanguagePreference>(languageCombo->currentData().toInt());
+    if (selectedPreference == m_languagePreference) {
+        return;
+    }
+
+    m_languagePreference = selectedPreference;
+    applyLanguagePreference();
+    saveLibrary();
 }
