@@ -1,0 +1,20 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="assets/file_drop.png">assets/file_drop.png</file>
+        <file alias="assets/file_item.png">assets/file_item.png</file>
+        <file alias="assets/file_item_active.png">assets/file_item_active.png</file>
+        <file alias="assets/file_open.png">assets/file_open.png</file>
+        <file alias="assets/file_open_disabled.png">assets/file_open_disabled.png</file>
+        <file alias="assets/file_refresh.png">assets/file_refresh.png</file>
+        <file alias="assets/file_save.png">assets/file_save.png</file>
+        <file alias="assets/file_save_disabled.png">assets/file_save_disabled.png</file>
+        <file alias="assets/tab_add.png">assets/tab_add.png</file>
+        <file alias="assets/tab_close.png">assets/tab_close.png</file>
+        <file alias="assets/tab_close_active.png">assets/tab_close_active.png</file>
+        <file alias="assets/title_logo.png">assets/title_logo.png</file>
+        <file alias="assets/title_settings.png">assets/title_settings.png</file>
+        <file alias="assets/window_close.png">assets/window_close.png</file>
+        <file alias="assets/window_maximize.png">assets/window_maximize.png</file>
+        <file alias="assets/window_minimize.png">assets/window_minimize.png</file>
+    </qresource>
+</RCC>
