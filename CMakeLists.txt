@@ -14,12 +14,18 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets LinguistTools)
 
 set(TS_FILES glue-switch_zh_CN.ts)
 
+set(APP_ICON_RESOURCE "")
+if(WIN32)
+    set(APP_ICON_RESOURCE app_icon.rc)
+endif()
+
 set(PROJECT_SOURCES
         main.cpp
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
         resources.qrc
+        ${APP_ICON_RESOURCE}
         ${TS_FILES}
 )
 
